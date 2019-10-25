@@ -45,16 +45,56 @@ def event_grouping(df, filtering=False):
     # Filtering lets you choose if you want to analyze the durations based on non-zero consumption only
     if filtering==True:
         df = df[(df.a_current>0.0)]
+    ############################################################################
     # all the events whose consecutive timestamps are within 1 hour margin
     # are labeled to be as belonging to the same group
+    #
+    # ASSUMPTION: If consecutive timestamps are within 1 hour margin then the
+    # generator is still on and the missing timestamps during that hour were due to
+    # communication failure
+    ############################################################################
     df = df.sort_values(by=['mtype', 'meterID','recordtime'])
     # df['new_group'] = df.groupby(['mtype','meterID']).recordtime.apply(lambda x: (x-x.shift(1)).dt.total_seconds()>3600.0).cumsum()
     df['new_group'] = (((df.recordtime-df.recordtime.shift(1)).dt.total_seconds()>3600.0) | (df.meterID != df.meterID.shift(1))).cumsum()
     # grouping by the new groups formed to calculate duration of typical generator usage
-    dg = df.groupby(['mtype','meterID','new_group']).agg({'recordtime':['min','max'], 'meterCount':['min','max'], 'a_current':['min','mean','max'], 'a_active_power':['min','mean','max'], 'a_power_factor':['min','mean','max'], 'a_voltage':['min','mean','max']}).reset_index()
-    dg.columns = ['mtype','meterID','new_group','t_min','t_max','kwh_min', 'kwh_max', 'i_min', 'i_mean', 'i_max', 'p_min', 'p_mean', 'p_max', 'pf_min', 'pf_mean', 'pf_max', 'v_min', 'v_mean', 'v_max']
+    dg = df.groupby(['mtype','meterID','new_group']).agg({'recordtime':['min','max','count'], 'meterCount':['min','max'], 'a_current':['min','mean','max'], 'a_active_power':['min','mean','max'], 'a_power_factor':['min','mean','max'], 'a_voltage':['min','mean','max']}).reset_index()
+    dg.columns = ['mtype','meterID','new_group','t_min','t_max','packs_tx','kwh_min', 'kwh_max', 'i_min', 'i_mean', 'i_max', 'p_min', 'p_mean', 'p_max', 'pf_min', 'pf_mean', 'pf_max', 'v_min', 'v_mean', 'v_max']
     dg['dur'] = (dg['t_max'] - dg['t_min']).dt.total_seconds()/3600.00 # duration in hours
+    # one packet expected at every one minute timestamp
+    dg['packs_exp'] = dg['dur'].apply(lambda x: (x*60 + 1)) # +1 to add the last timestamp of the event
     return dg
+
+def reception_rate_analysis(dg):
+    ################Event-level reception rate#####################################
+    # we take a mean of event-wise reception rates per meter
+    de = dg.copy()
+    de['recep_eve'] = de.packs_tx*100.0/de.packs_exp
+    de = de.groupby(['mtype','meterID']).mean()[['recep_eve']].reset_index()
+    ################Overall reception rate#########################################
+    # For every meter, we divide the total samples received to total expected samples
+    # to obtain overall meter reception rate
+    do = dg.groupby(['mtype','meterID']).sum()[['packs_tx','packs_exp']].reset_index()
+    do['recep_ov'] = do.packs_tx*100.0/do.packs_exp
+    ###############DISTRIBUTION PLOTS#############################################
+    cdf_plot(do,'recep_ov','Packet Reception Rate (%)','Proportion of Meters (%)',"CDF of Packet Reception Rate")
+    # code.interact(local =locals())
+    return None
+
+
+def cdf_plot(df,column,xlabel,ylabel,title):
+    df = df.sort_values(by=column)
+    df = df.reset_index()
+    df = df.drop(columns=['index'])
+    df['ct'] = df.index
+    df.ct = df.ct*100.0/df.ct.max()
+    plt.plot(df[column], df.ct)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.show()
+    code.interact(local = locals())
+    return None
+
 
 def event_duration(dg,sampling_f):
     # Returns average duration of generator operation for the given sampling frequency - daily, monthly
@@ -165,4 +205,6 @@ if __name__ == '__main__':
     # power_util(dp.copy(),"Distribution of active power demand per generator")
     #-----Time of Use----------------------------------------
     # time_of_use(dp.copy())
+    #---------Reception Rate---------------------------------
+    reception_rate_analysis(dg)
     code.interact(local = locals())
